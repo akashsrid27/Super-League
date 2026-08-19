@@ -599,6 +599,7 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const saveTimer = useRef(null);
   const savingRef = useRef(false);
+  const [role, setRole] = useState(null); // null | "admin" | "user"
 
   useEffect(() => {
     (async () => {
@@ -618,6 +619,13 @@ export default function App() {
       }
       setLoaded(true);
     })();
+  }, []);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("sl-auction-role");
+      if (saved === "admin" || saved === "user") setRole(saved);
+    } catch (e) {}
   }, []);
 
   const persist = useCallback((next) => {
@@ -646,26 +654,6 @@ export default function App() {
     return () => clearInterval(interval);
   }, [loaded]);
 
-  if (!loaded || !data) {
-    return (
-      <div style={{ background: C.bg, color: C.chalk, minHeight: 500, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, sans-serif" }}>
-        <div style={{ textAlign: "center" }}>
-          <div style={{ width: 10, height: 10, borderRadius: 999, background: C.gold, margin: "0 auto 12px", animation: "pulse 1.2s infinite" }} />
-          Loading auction room…
-        </div>
-      </div>
-    );
-  }
-
-  const [role, setRole] = useState(null); // null | "admin" | "user"
-
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem("sl-auction-role");
-      if (saved === "admin" || saved === "user") setRole(saved);
-    } catch (e) {}
-  }, []);
-
   const handleLogin = (code) => {
     let r = null;
     if (code === "2703") r = "admin";
@@ -681,6 +669,17 @@ export default function App() {
     setRole(null);
     try { localStorage.removeItem("sl-auction-role"); } catch (e) {}
   };
+
+  if (!loaded || !data) {
+    return (
+      <div style={{ background: C.bg, color: C.chalk, minHeight: 500, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, sans-serif" }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ width: 10, height: 10, borderRadius: 999, background: C.gold, margin: "0 auto 12px", animation: "pulse 1.2s infinite" }} />
+          Loading auction room…
+        </div>
+      </div>
+    );
+  }
 
   if (role === null) {
     return (
