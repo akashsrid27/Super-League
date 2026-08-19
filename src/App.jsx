@@ -657,15 +657,89 @@ export default function App() {
     );
   }
 
+  const [role, setRole] = useState(null); // null | "admin" | "user"
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("sl-auction-role");
+      if (saved === "admin" || saved === "user") setRole(saved);
+    } catch (e) {}
+  }, []);
+
+  const handleLogin = (code) => {
+    let r = null;
+    if (code === "2703") r = "admin";
+    else if (code === "0000") r = "user";
+    if (r) {
+      setRole(r);
+      try { localStorage.setItem("sl-auction-role", r); } catch (e) {}
+    }
+    return r !== null;
+  };
+
+  const handleLogout = () => {
+    setRole(null);
+    try { localStorage.removeItem("sl-auction-role"); } catch (e) {}
+  };
+
+  if (role === null) {
+    return (
+      <div style={{ background: C.bg, minHeight: "100vh", color: C.chalk, fontFamily: "Inter, system-ui, sans-serif" }}>
+        <GlobalStyle />
+        <CodeGate onLogin={handleLogin} />
+      </div>
+    );
+  }
+
   return (
     <div style={{ background: C.bg, minHeight: "100vh", color: C.chalk, fontFamily: "Inter, system-ui, sans-serif" }}>
       <GlobalStyle />
-      <TopBar tab={tab} setTab={setTab} data={data} persist={persist} />
+      <TopBar tab={tab} setTab={setTab} data={data} persist={persist} role={role} onLogout={handleLogout} />
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "20px 16px 60px" }}>
-        {tab === "auction" && <AuctionRoom data={data} persist={persist} />}
+        {tab === "auction" && <AuctionRoom data={data} persist={persist} role={role} />}
         {tab === "squads" && <Squads data={data} />}
-        {tab === "pool" && <PlayerPool data={data} persist={persist} />}
-        {tab === "table" && <TournamentTable data={data} persist={persist} />}
+        {tab === "pool" && <PlayerPool data={data} persist={persist} role={role} />}
+        {tab === "table" && <TournamentTable data={data} persist={persist} role={role} />}
+      </div>
+    </div>
+  );
+}
+
+function CodeGate({ onLogin }) {
+  const [code, setCode] = useState("");
+  const [error, setError] = useState(false);
+
+  const submit = () => {
+    const ok = onLogin(code.trim());
+    if (!ok) { setError(true); setCode(""); }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div className="popIn" style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 14, padding: 30, maxWidth: 340, width: "100%", textAlign: "center" }}>
+        <div style={{ width: 40, height: 40, borderRadius: 10, background: `linear-gradient(135deg, ${C.gold}, #9c7a3a)`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px" }}>
+          <Hammer size={20} color={C.bg} />
+        </div>
+        <div className="disp" style={{ fontSize: 17, marginBottom: 4 }}>SUPER LEAGUE AUCTION</div>
+        <div style={{ fontSize: 12, color: C.silverDim, marginBottom: 20 }}>Enter your access code to continue</div>
+        <input
+          type="password"
+          inputMode="numeric"
+          value={code}
+          onChange={e => { setCode(e.target.value); setError(false); }}
+          onKeyDown={e => { if (e.key === "Enter") submit(); }}
+          placeholder="Access code"
+          autoFocus
+          style={{
+            width: "100%", textAlign: "center", letterSpacing: "0.3em", fontSize: 18,
+            background: C.panel2, border: `1px solid ${error ? C.live : C.line}`, borderRadius: 8,
+            padding: "12px 10px", color: C.chalk, marginBottom: 10,
+          }}
+        />
+        {error && <div style={{ fontSize: 12, color: C.live, marginBottom: 10 }}>Code not recognized — try again.</div>}
+        <button onClick={submit} style={{ width: "100%", background: C.gold, color: C.bg, border: "none", padding: "11px 16px", borderRadius: 8, fontWeight: 800, fontSize: 14 }}>
+          Enter
+        </button>
       </div>
     </div>
   );
@@ -745,7 +819,7 @@ function ResetModal({ step, onCancel, onNext, onConfirm }) {
 }
 
 /* ---------------- Top bar ---------------- */
-function TopBar({ tab, setTab, data, persist }) {
+function TopBar({ tab, setTab, data, persist, role, onLogout }) {
   const tabs = [
     { id: "auction", label: "Auction Room", icon: Hammer },
     { id: "squads", label: "Squads", icon: Users },
@@ -754,6 +828,7 @@ function TopBar({ tab, setTab, data, persist }) {
   ];
   const soldCount = data.players.filter(p => p.status === "sold").length;
   const [resetStep, setResetStep] = useState(0); // 0 = closed, 1 = first warning, 2 = final warning
+  const isAdmin = role === "admin";
 
   const doConfirmedReset = () => {
     persist(resetAuctionState(data));
@@ -785,13 +860,19 @@ function TopBar({ tab, setTab, data, persist }) {
             <div className="mono" style={{ fontSize: 12, color: C.gold, background: C.panel2, border: `1px solid ${C.line}`, padding: "6px 10px", borderRadius: 6 }}>
               {soldCount} / {data.players.length} PLAYERS SOLD
             </div>
-            <button onClick={() => setResetStep(1)} title="Reset all sold players, purses, and squads"
-              style={{
-                display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700,
-                color: C.live, background: "transparent", border: `1px solid ${C.live}`, padding: "7px 12px", borderRadius: 6,
-              }}>
-              <RotateCcw size={13} /> Restart auction
-            </button>
+            <div style={{ fontSize: 11, color: C.silverDim, display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ color: isAdmin ? C.gold : C.silver, fontWeight: 700 }}>{isAdmin ? "Admin" : "Manager"}</span>
+              <button onClick={onLogout} style={{ background: "transparent", border: "none", color: C.silverDim, textDecoration: "underline", fontSize: 11, padding: 0 }}>log out</button>
+            </div>
+            {isAdmin && (
+              <button onClick={() => setResetStep(1)} title="Reset all sold players, purses, and squads"
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700,
+                  color: C.live, background: "transparent", border: `1px solid ${C.live}`, padding: "7px 12px", borderRadius: 6,
+                }}>
+                <RotateCcw size={13} /> Restart auction
+              </button>
+            )}
           </div>
         </div>
         <div style={{ display: "flex", gap: 4 }}>
@@ -892,7 +973,8 @@ function SoldCelebration({ player, manager, price, onClose }) {
 }
 
 /* ---------------- Auction Room ---------------- */
-function AuctionRoom({ data, persist }) {
+function AuctionRoom({ data, persist, role }) {
+  const isAdmin = role === "admin";
   const [celebration, setCelebration] = useState(null);
   const available = data.players.filter(p => p.status === "available").sort((a, b) => a.order - b.order);
   const current = data.currentPlayerId ? data.players.find(p => p.id === data.currentPlayerId) : null;
@@ -903,6 +985,7 @@ function AuctionRoom({ data, persist }) {
   const setTotalCount = current ? data.players.filter(p => p.set === current.set).length : 0;
 
   const startNext = () => {
+    if (!isAdmin) return;
     if (!available.length) return;
     const next = available[0];
     persist({ ...data, currentPlayerId: next.id, currentBid: next.base, currentBidderId: null, started: true });
@@ -920,6 +1003,7 @@ function AuctionRoom({ data, persist }) {
   };
 
   const finalize = (result) => {
+    if (!isAdmin) return;
     if (!current) return;
     const snapshot = JSON.parse(JSON.stringify(data));
     let players = data.players.map(p => p.id === current.id
@@ -956,6 +1040,7 @@ function AuctionRoom({ data, persist }) {
   };
 
   const undo = () => {
+    if (!isAdmin) return;
     if (!data.history.length) return;
     const [last, ...rest] = data.history;
     persist({ ...last, history: rest });
@@ -1004,12 +1089,16 @@ function AuctionRoom({ data, persist }) {
                     : `${available.length} players still on the board, in auction order.`}
                 </div>
                 {available.length > 0 && (
-                  <button onClick={startNext} style={{
-                    display: "inline-flex", alignItems: "center", gap: 8, background: C.gold, color: C.bg,
-                    border: "none", padding: "12px 22px", borderRadius: 8, fontWeight: 800, fontSize: 14,
-                  }}>
-                    <PlayCircle size={18} /> Bring up {available[0].name}
-                  </button>
+                  isAdmin ? (
+                    <button onClick={startNext} style={{
+                      display: "inline-flex", alignItems: "center", gap: 8, background: C.gold, color: C.bg,
+                      border: "none", padding: "12px 22px", borderRadius: 8, fontWeight: 800, fontSize: 14,
+                    }}>
+                      <PlayCircle size={18} /> Bring up {available[0].name}
+                    </button>
+                  ) : (
+                    <div style={{ fontSize: 12, color: C.silverDim }}>Waiting for the admin to bring up the next player…</div>
+                  )
                 )}
               </div>
             ) : (
@@ -1076,20 +1165,26 @@ function AuctionRoom({ data, persist }) {
               </div>
 
               {/* Controls */}
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 20 }}>
-                <button onClick={() => finalize("sold")} disabled={!data.currentBidderId}
-                  style={{ flex: "1 1 200px", background: data.currentBidderId ? C.gold : C.lineSoft, color: data.currentBidderId ? C.bg : C.silverDim, border: "none", padding: "13px 16px", borderRadius: 8, fontWeight: 800, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                  <ShieldCheck size={16} /> SOLD — confirm {fmt(data.currentBid)}
-                </button>
-                <button onClick={() => finalize("unsold")}
-                  style={{ background: "transparent", color: C.silver, border: `1px solid ${C.line}`, padding: "13px 16px", borderRadius: 8, fontWeight: 600, fontSize: 13 }}>
-                  Pass (no bids)
-                </button>
-                <button onClick={undo} disabled={!data.history.length}
-                  style={{ background: "transparent", color: data.history.length ? C.silver : C.silverDim, border: `1px solid ${C.line}`, padding: "13px 16px", borderRadius: 8, fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
-                  <Undo2 size={14} /> Undo last
-                </button>
-              </div>
+              {isAdmin ? (
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 20 }}>
+                  <button onClick={() => finalize("sold")} disabled={!data.currentBidderId}
+                    style={{ flex: "1 1 200px", background: data.currentBidderId ? C.gold : C.lineSoft, color: data.currentBidderId ? C.bg : C.silverDim, border: "none", padding: "13px 16px", borderRadius: 8, fontWeight: 800, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                    <ShieldCheck size={16} /> SOLD — confirm {fmt(data.currentBid)}
+                  </button>
+                  <button onClick={() => finalize("unsold")}
+                    style={{ background: "transparent", color: C.silver, border: `1px solid ${C.line}`, padding: "13px 16px", borderRadius: 8, fontWeight: 600, fontSize: 13 }}>
+                    Pass (no bids)
+                  </button>
+                  <button onClick={undo} disabled={!data.history.length}
+                    style={{ background: "transparent", color: data.history.length ? C.silver : C.silverDim, border: `1px solid ${C.line}`, padding: "13px 16px", borderRadius: 8, fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                    <Undo2 size={14} /> Undo last
+                  </button>
+                </div>
+              ) : (
+                <div style={{ marginBottom: 20, fontSize: 12, color: C.silverDim }}>
+                  Only the admin can confirm a sale, pass, or undo a bid.
+                </div>
+              )}
             </>
           )}
 
@@ -1306,7 +1401,8 @@ function PitchChip({ slot, player }) {
 }
 
 /* ---------------- Player Pool ---------------- */
-function PlayerPool({ data, persist }) {
+function PlayerPool({ data, persist, role }) {
+  const isAdmin = role === "admin";
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [setFilter, setSetFilter] = useState("all");
@@ -1321,6 +1417,7 @@ function PlayerPool({ data, persist }) {
   }).sort((a, b) => a.order - b.order);
 
   const addPlayer = () => {
+    if (!isAdmin) return;
     if (!form.name.trim()) return;
     const rating = Math.max(40, Math.min(99, Number(form.rating) || 75));
     const id = "custom_" + Date.now();
@@ -1332,9 +1429,11 @@ function PlayerPool({ data, persist }) {
   };
 
   const reopen = (id) => {
+    if (!isAdmin) return;
     persist({ ...data, players: data.players.map(p => p.id === id ? { ...p, status: "available" } : p) });
   };
   const removePlayer = (id) => {
+    if (!isAdmin) return;
     persist({ ...data, players: data.players.filter(p => p.id !== id) });
   };
 
@@ -1368,12 +1467,12 @@ function PlayerPool({ data, persist }) {
           <option value="sold">Sold</option>
           <option value="unsold">Unsold</option>
         </select>
-        <button onClick={() => setShowAdd(s => !s)} style={{ display: "flex", alignItems: "center", gap: 6, background: C.gold, color: C.bg, border: "none", padding: "9px 14px", borderRadius: 8, fontWeight: 700, fontSize: 13 }}>
+        <button onClick={() => setShowAdd(s => !s)} style={{ display: "flex", alignItems: "center", gap: 6, background: C.gold, color: C.bg, border: "none", padding: "9px 14px", borderRadius: 8, fontWeight: 700, fontSize: 13, visibility: isAdmin ? "visible" : "hidden" }}>
           <Plus size={14} /> Add player
         </button>
       </div>
 
-      {showAdd && (
+      {showAdd && isAdmin && (
         <div style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, padding: 14, marginBottom: 16, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
           <div>
             <div style={{ fontSize: 11, color: C.silverDim, marginBottom: 4 }}>Name</div>
@@ -1413,10 +1512,10 @@ function PlayerPool({ data, persist }) {
                   {p.status === "unsold" && <span style={{ color: C.live }}>Unsold</span>}
                 </div>
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  {p.status === "unsold" && (
+                  {isAdmin && p.status === "unsold" && (
                     <button onClick={() => reopen(p.id)} title="Reopen for bidding" style={{ background: "transparent", border: "none", color: C.silver }}><ListRestart size={15} /></button>
                   )}
-                  {p.status === "available" && (
+                  {isAdmin && p.status === "available" && (
                     <button onClick={() => removePlayer(p.id)} title="Remove from pool" style={{ background: "transparent", border: "none", color: C.silverDim }}><Trash2 size={15} /></button>
                   )}
                 </div>
@@ -1431,11 +1530,12 @@ function PlayerPool({ data, persist }) {
 }
 
 /* ---------------- League Table + Schedule ---------------- */
-function ManagerNameEditor({ data, persist }) {
+function ManagerNameEditor({ data, persist, role }) {
+  const isAdmin = role === "admin";
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState("");
 
-  const startEdit = (m) => { setEditing(m.id); setDraft(m.name); };
+  const startEdit = (m) => { if (!isAdmin) return; setEditing(m.id); setDraft(m.name); };
   const save = () => {
     const name = draft.trim();
     if (!name) { setEditing(null); return; }
@@ -1445,7 +1545,9 @@ function ManagerNameEditor({ data, persist }) {
 
   return (
     <div style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, padding: 16, marginBottom: 20 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, color: C.silverDim, marginBottom: 10, letterSpacing: "0.05em" }}>MANAGERS — CLICK TO RENAME</div>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.silverDim, marginBottom: 10, letterSpacing: "0.05em" }}>
+        MANAGERS{isAdmin ? " — CLICK TO RENAME" : ""}
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
         {data.managers.map(m => (
           <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, background: C.panel2, border: `1px solid ${C.line}`, borderRadius: 8, padding: "8px 10px" }}>
@@ -1455,11 +1557,13 @@ function ManagerNameEditor({ data, persist }) {
                 onKeyDown={e => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(null); }}
                 onBlur={save}
                 style={{ flex: 1, background: "transparent", border: `1px solid ${C.gold}`, borderRadius: 4, color: C.chalk, fontSize: 13, padding: "2px 6px", minWidth: 0 }} />
-            ) : (
+            ) : isAdmin ? (
               <button onClick={() => startEdit(m)} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent", border: "none", color: C.chalk, fontSize: 13, fontWeight: 600, padding: 0, minWidth: 0 }}>
                 <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.name}</span>
                 <Pencil size={12} color={C.silverDim} style={{ flexShrink: 0, marginLeft: 6 }} />
               </button>
+            ) : (
+              <span style={{ flex: 1, fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.name}</span>
             )}
           </div>
         ))}
@@ -1468,11 +1572,13 @@ function ManagerNameEditor({ data, persist }) {
   );
 }
 
-function TournamentTable({ data, persist }) {
+function TournamentTable({ data, persist, role }) {
+  const isAdmin = role === "admin";
   const [gw, setGw] = useState(0);
   const [confirmRegen, setConfirmRegen] = useState(false);
 
   const doGenerate = () => {
+    if (!isAdmin) return;
     const schedule = generateSchedule(data.managers.map(m => m.id));
     persist({ ...data, schedule });
     setGw(0);
@@ -1482,6 +1588,7 @@ function TournamentTable({ data, persist }) {
   const hasScores = data.schedule && data.schedule.some(round => round.some(m => m.hg !== null || m.ag !== null));
 
   const updateScore = (roundIdx, matchId, field, value) => {
+    if (!isAdmin) return;
     const v = value === "" ? null : Math.max(0, Number(value) || 0);
     const schedule = data.schedule.map((round, ri) => ri !== roundIdx ? round : round.map(m => m.id === matchId ? { ...m, [field]: v } : m));
     persist({ ...data, schedule });
@@ -1504,7 +1611,7 @@ function TournamentTable({ data, persist }) {
 
   return (
     <div>
-      <ManagerNameEditor data={data} persist={persist} />
+      <ManagerNameEditor data={data} persist={persist} role={role} />
 
       <div style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden", marginBottom: 20 }}>
         <div style={{ display: "grid", gridTemplateColumns: "34px 1fr 44px 44px 44px 44px 60px 60px 50px", padding: "10px 14px", fontSize: 11, color: C.silverDim, borderBottom: `1px solid ${C.line}`, fontWeight: 700 }}>
@@ -1535,7 +1642,7 @@ function TournamentTable({ data, persist }) {
                 style={{ background: C.panel2, border: `1px solid ${C.line}`, borderRadius: 6, padding: "7px 9px", color: C.chalk, fontSize: 13 }}>
                 {data.schedule.map((_, i) => <option key={i} value={i}>Gameweek {i + 1}</option>)}
               </select>
-              {!confirmRegen ? (
+              {isAdmin && (!confirmRegen ? (
                 <button onClick={() => setConfirmRegen(true)} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", border: `1px solid ${C.line}`, color: C.silver, padding: "7px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600 }}>
                   <Shuffle size={12} /> Regenerate
                 </button>
@@ -1545,17 +1652,19 @@ function TournamentTable({ data, persist }) {
                   <button onClick={doGenerate} style={{ background: C.live, border: "none", color: "#fff", padding: "7px 10px", borderRadius: 6, fontSize: 12, fontWeight: 700 }}>Yes, regenerate</button>
                   <button onClick={() => setConfirmRegen(false)} style={{ background: "transparent", border: `1px solid ${C.line}`, color: C.silver, padding: "7px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600 }}>Cancel</button>
                 </>
-              )}
+              ))}
             </div>
-          ) : (
+          ) : isAdmin ? (
             <button onClick={doGenerate} style={{ display: "flex", alignItems: "center", gap: 8, background: C.gold, color: C.bg, border: "none", padding: "9px 16px", borderRadius: 8, fontWeight: 700, fontSize: 13 }}>
               <Shuffle size={14} /> Generate double round-robin schedule
             </button>
+          ) : (
+            <div style={{ fontSize: 12, color: C.silverDim }}>Waiting for the admin to generate the schedule…</div>
           )}
         </div>
 
         {!data.schedule ? (
-          <div style={{ color: C.silverDim, fontSize: 13 }}>No schedule yet — generate one so every manager faces every other manager home and away.</div>
+          <div style={{ color: C.silverDim, fontSize: 13 }}>No schedule yet — the admin needs to generate one so every manager faces every other manager home and away.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {data.schedule[gw].map(m => {
@@ -1567,13 +1676,21 @@ function TournamentTable({ data, persist }) {
                     <span style={{ width: 7, height: 7, borderRadius: 999, background: h?.color }} />
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <input type="number" min={0} value={m.hg === null ? "" : m.hg} placeholder="-"
-                      onChange={e => updateScore(gw, m.id, "hg", e.target.value)}
-                      style={{ width: 42, textAlign: "center", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 6, padding: "6px 4px", color: C.chalk, fontSize: 13 }} />
-                    <span style={{ color: C.silverDim, fontSize: 12 }}>–</span>
-                    <input type="number" min={0} value={m.ag === null ? "" : m.ag} placeholder="-"
-                      onChange={e => updateScore(gw, m.id, "ag", e.target.value)}
-                      style={{ width: 42, textAlign: "center", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 6, padding: "6px 4px", color: C.chalk, fontSize: 13 }} />
+                    {isAdmin ? (
+                      <>
+                        <input type="number" min={0} value={m.hg === null ? "" : m.hg} placeholder="-"
+                          onChange={e => updateScore(gw, m.id, "hg", e.target.value)}
+                          style={{ width: 42, textAlign: "center", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 6, padding: "6px 4px", color: C.chalk, fontSize: 13 }} />
+                        <span style={{ color: C.silverDim, fontSize: 12 }}>–</span>
+                        <input type="number" min={0} value={m.ag === null ? "" : m.ag} placeholder="-"
+                          onChange={e => updateScore(gw, m.id, "ag", e.target.value)}
+                          style={{ width: 42, textAlign: "center", background: C.bg, border: `1px solid ${C.line}`, borderRadius: 6, padding: "6px 4px", color: C.chalk, fontSize: 13 }} />
+                      </>
+                    ) : (
+                      <span className="mono" style={{ fontSize: 14, fontWeight: 700, color: (m.hg !== null && m.ag !== null) ? C.chalk : C.silverDim }}>
+                        {m.hg === null ? "–" : m.hg} : {m.ag === null ? "–" : m.ag}
+                      </span>
+                    )}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 120 }}>
                     <span style={{ width: 7, height: 7, borderRadius: 999, background: a?.color }} />
