@@ -498,8 +498,38 @@ function buildPool() {
       order++;
     });
   });
-  return out;
+  return shuffleWithinSets(out);
 }
+
+// Keeps sets auctioned in the fixed set order (GK Set 1, Marquee, ...),
+// but randomizes which player comes up first *within* each set — so the
+// exact pick order is a surprise every time, including on restart.
+function shuffleWithinSets(players) {
+  const bySet = {};
+  players.forEach(p => { (bySet[p.set] = bySet[p.set] || []).push(p); });
+
+  const shuffle = (arr) => {
+    const a = [...arr];
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  };
+
+  let order = 0;
+  const result = [];
+  SET_ORDER.forEach(setName => {
+    shuffle(bySet[setName] || []).forEach(p => { result.push({ ...p, order: order++ }); });
+  });
+  // Anything not in a recognized set (e.g. custom players added later) goes last, also shuffled.
+  const leftover = players.filter(p => !SET_ORDER.includes(p.set));
+  shuffle(leftover).forEach(p => { result.push({ ...p, order: order++ }); });
+
+  return result;
+}
+
+const HISTORY_LIMIT = 5; // how many bid/sale actions can be undone in a row
 
 function nextIncrement(current) {
   if (current < 5000000) return 500000;
@@ -774,9 +804,10 @@ function GlobalStyle() {
 
 /* ---------------- Reset (2-step confirm modal) ---------------- */
 function resetAuctionState(data) {
+  const resetPlayers = data.players.map(p => ({ ...p, status: "available", ownerId: null, price: null }));
   return {
     ...data,
-    players: data.players.map(p => ({ ...p, status: "available", ownerId: null, price: null })),
+    players: shuffleWithinSets(resetPlayers), // fresh random pick order each restart
     managers: data.managers.map(m => ({ ...m, purse: 100000000, squad: [] })),
     currentPlayerId: null,
     currentBid: null,
@@ -997,8 +1028,9 @@ function AuctionRoom({ data, persist, role }) {
     const amount = isFirstBid ? data.currentBid : data.currentBid + nextIncrement(data.currentBid);
     if (mgr.purse < amount) return;
     if (data.currentBidderId === managerId) return;
+    const snapshot = JSON.parse(JSON.stringify(data));
     const log = [{ ts: Date.now(), text: `${mgr.name} bids ${fmt(amount)} for ${current.name}` }, ...data.log].slice(0, 60);
-    persist({ ...data, currentBid: amount, currentBidderId: managerId, log });
+    persist({ ...data, currentBid: amount, currentBidderId: managerId, log, history: [snapshot, ...data.history].slice(0, HISTORY_LIMIT) });
   };
 
   const finalize = (result) => {
@@ -1027,7 +1059,7 @@ function AuctionRoom({ data, persist, role }) {
     const soldPlayerSnapshot = current;
     persist({
       ...data, players, managers, log,
-      history: [snapshot, ...data.history].slice(0, 10),
+      history: [snapshot, ...data.history].slice(0, HISTORY_LIMIT),
       currentPlayerId: nextPlayer ? nextPlayer.id : null,
       currentBid: nextPlayer ? nextPlayer.base : null,
       currentBidderId: null,
@@ -1174,9 +1206,9 @@ function AuctionRoom({ data, persist, role }) {
                     style={{ background: "transparent", color: C.silver, border: `1px solid ${C.line}`, padding: "13px 16px", borderRadius: 8, fontWeight: 600, fontSize: 13 }}>
                     Pass (no bids)
                   </button>
-                  <button onClick={undo} disabled={!data.history.length}
+                  <button onClick={undo} disabled={!data.history.length} title="Undoes the last bid or sale — up to 5 steps back"
                     style={{ background: "transparent", color: data.history.length ? C.silver : C.silverDim, border: `1px solid ${C.line}`, padding: "13px 16px", borderRadius: 8, fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
-                    <Undo2 size={14} /> Undo last
+                    <Undo2 size={14} /> Undo last {data.history.length > 0 && `(${data.history.length})`}
                   </button>
                 </div>
               ) : (
@@ -1200,14 +1232,6 @@ function AuctionRoom({ data, persist, role }) {
               </div>
             )}
           </div>
-
-          {/* Up next preview */}
-          {available.length > 1 && current && (
-            <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: C.silverDim }}>
-              <ChevronRight size={14} />
-              Up next: {available.filter(p => p.id !== current.id).slice(0, 4).map(p => `${p.name} (${p.rating})`).join(" · ")}
-            </div>
-          )}
         </div>
 
         {/* Manager summary sidebar */}
