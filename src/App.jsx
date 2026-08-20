@@ -640,6 +640,14 @@ export default function App() {
   const savingRef = useRef(false);
   const versionRef = useRef(0); // last known server version this client is based on
   const [role, setRole] = useState(null); // null | "admin" | "user" — never persisted, always re-prompted
+  const [syncNotice, setSyncNotice] = useState(null);
+  const noticeTimer = useRef(null);
+
+  const flashSyncNotice = useCallback((text) => {
+    setSyncNotice(text);
+    clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setSyncNotice(null), 3200);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -653,7 +661,13 @@ export default function App() {
           setData(init);
           const res = await apiSetState(init, 0);
           if (res.ok) versionRef.current = res.version;
-          else if (res.conflict) { setData(res.data); versionRef.current = res.version; }
+          else if (res.conflict) {
+            // Only adopt the server's version if it actually has usable data —
+            // never let a malformed/empty conflict response wipe out the
+            // perfectly good local state we just built.
+            if (res.data) setData(res.data);
+            if (typeof res.version === "number") versionRef.current = res.version;
+          }
         }
       } catch (e) {
         const init = buildInitial();
@@ -678,15 +692,19 @@ export default function App() {
         if (res.ok) {
           versionRef.current = res.version;
         } else if (res.conflict) {
-          // Another tab/device wrote first. Trust the server's version
-          // rather than silently overwriting it with our stale edit.
-          setData(res.data);
-          versionRef.current = res.version;
+          // Another tab/device wrote first — that action wins, so this
+          // one gets discarded rather than silently forced through
+          // (e.g. you can't undercut a bid someone else already placed
+          // a split-second earlier). Adopt the true state and say so,
+          // instead of just reverting with no explanation.
+          if (res.data) setData(res.data);
+          if (typeof res.version === "number") versionRef.current = res.version;
+          flashSyncNotice("Someone else acted first — synced to the latest state. Go ahead and try again.");
         }
       } catch (e) {}
       savingRef.current = false;
     }, 150);
-  }, []);
+  }, [flashSyncNotice]);
 
   const refreshFromServer = useCallback(async () => {
     if (savingRef.current) return;
@@ -700,14 +718,14 @@ export default function App() {
     } catch (e) {}
   }, []);
 
-  // Light polling so other devices (spectators, other managers) pick up
-  // changes without needing a manual refresh, plus an immediate refresh
+  // Polling so other devices (spectators, other managers) pick up changes
+  // quickly without needing a manual refresh, plus an immediate refresh
   // whenever this tab regains focus — background tabs get throttled by
   // the browser, so this catches a tab back up the moment someone
   // switches to it, before they can act on stale data.
   useEffect(() => {
     if (!loaded) return;
-    const interval = setInterval(refreshFromServer, 4000);
+    const interval = setInterval(refreshFromServer, 2000);
     const onVisible = () => { if (document.visibilityState === "visible") refreshFromServer(); };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -751,6 +769,7 @@ export default function App() {
   return (
     <div style={{ background: C.bg, minHeight: "100vh", color: C.chalk, fontFamily: "Inter, system-ui, sans-serif" }}>
       <GlobalStyle />
+      {syncNotice && <SyncNoticeBanner text={syncNotice} />}
       <TopBar tab={tab} setTab={setTab} data={data} persist={persist} role={role} onLogout={handleLogout} />
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "20px 16px 60px" }}>
         {tab === "auction" && <AuctionRoom data={data} persist={persist} role={role} />}
@@ -758,6 +777,19 @@ export default function App() {
         {tab === "pool" && <PlayerPool data={data} persist={persist} role={role} />}
         {tab === "table" && <TournamentTable data={data} persist={persist} role={role} />}
       </div>
+    </div>
+  );
+}
+
+function SyncNoticeBanner({ text }) {
+  return (
+    <div className="tickIn" style={{
+      position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 200,
+      background: C.gold, color: C.bg, fontWeight: 700, fontSize: 13,
+      padding: "10px 18px", borderRadius: 999, boxShadow: "0 6px 20px rgba(0,0,0,0.35)",
+      maxWidth: "90vw", textAlign: "center",
+    }}>
+      {text}
     </div>
   );
 }
