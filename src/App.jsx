@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { createClient } from "@supabase/supabase-js";
 import {
   Trophy, Hammer, Users, Search, Plus, RotateCcw, Wallet,
   Pencil, X, Check, ShieldCheck, ListRestart, ChevronRight, ChevronDown,
@@ -604,38 +605,61 @@ function buildInitial() {
   };
 }
 
-/* ---------------- Backend persistence (Netlify Function + Blobs) ----------------
-   Replaces the Claude-artifact-only window.storage API with calls to a real
-   serverless endpoint, so every device sees the same shared auction state.
+/* ---------------- Backend persistence (Supabase: Postgres + Realtime) ----------------
+   Replaces the polling-based Netlify Function approach with a real push
+   mechanism: every browser subscribes to a Postgres "row changed" event over
+   a WebSocket, so updates land the moment someone else writes — no waiting
+   on a poll interval.
 
-   Uses optimistic concurrency control: every write declares the version it
-   was based on. If another tab/device wrote in the meantime, the server
-   rejects the write (409) and hands back the true current state instead of
-   letting a stale tab silently undo a more recent change — this is what a
-   background tab (throttled by the browser, or just behind on polling) was
-   able to do before. */
-const API_URL = "/api/storage";
+   Writes use an atomic conditional UPDATE ("only update if version still
+   matches what I last saw"), which Postgres itself serializes correctly —
+   unlike a hand-rolled read-then-write, two simultaneous writes can never
+   both slip through. The loser gets 0 rows affected, fetches the true
+   current row, and adopts it. */
 
-async function apiGetState() {
-  const res = await fetch(API_URL);
-  if (!res.ok) return null;
-  const json = await res.json(); // { version, data }
-  return json;
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY) ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const ROW_ID = 1;
+const TABLE = "auction_state";
+
+async function dbGetRow() {
+  const { data: row, error } = await supabase.from(TABLE).select("version, data").eq("id", ROW_ID).maybeSingle();
+  if (error) throw error;
+  return row; // { version, data } | null
 }
-async function apiSetState(next, expectedVersion) {
-  const res = await fetch(API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ expectedVersion, data: next }),
-  });
-  const json = await res.json().catch(() => null);
-  return { ok: res.ok, status: res.status, ...(json || {}) };
+async function dbConditionalWrite(next, expectedVersion) {
+  const nextVersion = expectedVersion + 1;
+  const { data: rows, error } = await supabase
+    .from(TABLE)
+    .update({ version: nextVersion, data: next, updated_at: new Date().toISOString() })
+    .eq("id", ROW_ID)
+    .eq("version", expectedVersion)
+    .select("version, data");
+  if (error) throw error;
+  if (rows && rows.length > 0) return { ok: true, version: nextVersion };
+  // 0 rows matched: someone else already moved the version past what we expected.
+  const current = await dbGetRow();
+  return { ok: false, conflict: true, version: current?.version, data: current?.data };
+}
+async function dbInsertInitialRow(init) {
+  const { data: rows, error } = await supabase
+    .from(TABLE)
+    .insert({ id: ROW_ID, version: 1, data: init })
+    .select("version, data");
+  if (error) {
+    // Row already exists (someone else initialized first) — just read it.
+    const current = await dbGetRow();
+    return { ok: false, conflict: true, version: current?.version, data: current?.data };
+  }
+  return { ok: true, version: rows[0].version };
 }
 
 export default function App() {
   const [data, setData] = useState(null);
   const [tab, setTab] = useState("auction");
   const [loaded, setLoaded] = useState(false);
+  const [configError, setConfigError] = useState(false);
   const savingRef = useRef(false);
   const pendingWriteRef = useRef(null); // latest state queued while a write is in flight
   const versionRef = useRef(0); // last known server version this client is based on
@@ -650,32 +674,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!supabase) { setConfigError(true); setLoaded(true); return; }
     (async () => {
       try {
-        const existing = await apiGetState(); // { version, data }
-        if (existing && existing.data) {
-          setData(existing.data);
-          versionRef.current = existing.version;
+        const row = await dbGetRow();
+        if (row && row.data) {
+          setData(row.data);
+          versionRef.current = row.version;
         } else {
           const init = buildInitial();
           setData(init);
-          const res = await apiSetState(init, 0);
+          const res = await dbInsertInitialRow(init);
           if (res.ok) versionRef.current = res.version;
-          else if (res.conflict) {
-            // Only adopt the server's version if it actually has usable data —
-            // never let a malformed/empty conflict response wipe out the
-            // perfectly good local state we just built.
-            if (res.data) setData(res.data);
-            if (typeof res.version === "number") versionRef.current = res.version;
-          }
+          else if (res.conflict && res.data) { setData(res.data); versionRef.current = res.version; }
         }
       } catch (e) {
         const init = buildInitial();
         setData(init);
-        try {
-          const res = await apiSetState(init, 0);
-          if (res.ok) versionRef.current = res.version;
-        } catch (e2) {}
       }
       setLoaded(true);
     })();
@@ -691,7 +706,7 @@ export default function App() {
     savingRef.current = true;
     const expectedVersion = versionRef.current;
     try {
-      const res = await apiSetState(next, expectedVersion);
+      const res = await dbConditionalWrite(next, expectedVersion);
       if (res.ok) {
         versionRef.current = res.version;
       } else if (res.conflict) {
@@ -726,30 +741,62 @@ export default function App() {
   const refreshFromServer = useCallback(async () => {
     if (savingRef.current) return;
     try {
-      const latest = await apiGetState(); // { version, data }
+      const row = await dbGetRow();
       if (savingRef.current) return; // a write started while this fetch was in flight
-      if (latest && latest.data && latest.version > versionRef.current) {
-        versionRef.current = latest.version;
-        setData(latest.data);
+      if (row && row.data && row.version > versionRef.current) {
+        versionRef.current = row.version;
+        setData(row.data);
       }
     } catch (e) {}
   }, []);
 
-  // Polling so other devices (spectators, other managers) pick up changes
-  // quickly without needing a manual refresh, plus an immediate refresh
-  // whenever this tab regains focus — background tabs get throttled by
-  // the browser, so this catches a tab back up the moment someone
-  // switches to it, before they can act on stale data.
+  // Realtime push: every browser subscribes to UPDATE events on this row
+  // over a WebSocket, so changes land the instant someone else writes —
+  // no polling delay. A slow safety-net poll (30s) plus an immediate
+  // refresh on regaining tab focus cover the rare case the socket drops
+  // silently (e.g. a laptop waking from sleep).
   useEffect(() => {
-    if (!loaded) return;
-    const interval = setInterval(refreshFromServer, 500);
+    if (!loaded || !supabase) return;
+
+    const channel = supabase
+      .channel("auction-state-sync")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: TABLE, filter: `id=eq.${ROW_ID}` },
+        (payload) => {
+          if (savingRef.current) return; // let our own in-flight write's resolution win
+          const row = payload.new;
+          if (row && row.data && row.version > versionRef.current) {
+            versionRef.current = row.version;
+            setData(row.data);
+          }
+        }
+      )
+      .subscribe();
+
+    const interval = setInterval(refreshFromServer, 30000);
     const onVisible = () => { if (document.visibilityState === "visible") refreshFromServer(); };
     document.addEventListener("visibilitychange", onVisible);
+
     return () => {
+      supabase.removeChannel(channel);
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [loaded, refreshFromServer]);
+
+  if (configError) {
+    return (
+      <div style={{ background: C.bg, color: C.chalk, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, sans-serif", padding: 24, textAlign: "center" }}>
+        <div>
+          <div className="disp" style={{ fontSize: 18, color: C.live, marginBottom: 8 }}>Missing Supabase configuration</div>
+          <div style={{ color: C.silverDim, fontSize: 13, maxWidth: 420 }}>
+            VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY aren't set. Add them as environment variables (locally in .env, and in Netlify's site settings), then redeploy.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const handleLogin = (code) => {
     let r = null;
