@@ -606,21 +606,30 @@ function buildInitial() {
 
 /* ---------------- Backend persistence (Netlify Function + Blobs) ----------------
    Replaces the Claude-artifact-only window.storage API with calls to a real
-   serverless endpoint, so every device sees the same shared auction state. */
+   serverless endpoint, so every device sees the same shared auction state.
+
+   Uses optimistic concurrency control: every write declares the version it
+   was based on. If another tab/device wrote in the meantime, the server
+   rejects the write (409) and hands back the true current state instead of
+   letting a stale tab silently undo a more recent change — this is what a
+   background tab (throttled by the browser, or just behind on polling) was
+   able to do before. */
 const API_URL = "/api/storage";
 
 async function apiGetState() {
   const res = await fetch(API_URL);
   if (!res.ok) return null;
-  const json = await res.json();
-  return json && Object.keys(json).length ? json : null;
+  const json = await res.json(); // { version, data }
+  return json;
 }
-async function apiSetState(next) {
-  await fetch(API_URL, {
+async function apiSetState(next, expectedVersion) {
+  const res = await fetch(API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(next),
+    body: JSON.stringify({ expectedVersion, data: next }),
   });
+  const json = await res.json().catch(() => null);
+  return { ok: res.ok, status: res.status, ...(json || {}) };
 }
 
 export default function App() {
@@ -629,24 +638,30 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const saveTimer = useRef(null);
   const savingRef = useRef(false);
-  const lastWriteRef = useRef(0); // timestamp of the most recent local write
+  const versionRef = useRef(0); // last known server version this client is based on
   const [role, setRole] = useState(null); // null | "admin" | "user" — never persisted, always re-prompted
 
   useEffect(() => {
     (async () => {
       try {
-        const existing = await apiGetState();
-        if (existing) {
-          setData(existing);
+        const existing = await apiGetState(); // { version, data }
+        if (existing && existing.data) {
+          setData(existing.data);
+          versionRef.current = existing.version;
         } else {
           const init = buildInitial();
           setData(init);
-          await apiSetState(init);
+          const res = await apiSetState(init, 0);
+          if (res.ok) versionRef.current = res.version;
+          else if (res.conflict) { setData(res.data); versionRef.current = res.version; }
         }
       } catch (e) {
         const init = buildInitial();
         setData(init);
-        try { await apiSetState(init); } catch (e2) {}
+        try {
+          const res = await apiSetState(init, 0);
+          if (res.ok) versionRef.current = res.version;
+        } catch (e2) {}
       }
       setLoaded(true);
     })();
@@ -654,37 +669,52 @@ export default function App() {
 
   const persist = useCallback((next) => {
     setData(next);
-    lastWriteRef.current = Date.now();
     clearTimeout(saveTimer.current);
     savingRef.current = true;
+    const expectedVersion = versionRef.current;
     saveTimer.current = setTimeout(async () => {
-      try { await apiSetState(next); } catch (e) {}
+      try {
+        const res = await apiSetState(next, expectedVersion);
+        if (res.ok) {
+          versionRef.current = res.version;
+        } else if (res.conflict) {
+          // Another tab/device wrote first. Trust the server's version
+          // rather than silently overwriting it with our stale edit.
+          setData(res.data);
+          versionRef.current = res.version;
+        }
+      } catch (e) {}
       savingRef.current = false;
     }, 150);
   }, []);
 
+  const refreshFromServer = useCallback(async () => {
+    if (savingRef.current) return;
+    try {
+      const latest = await apiGetState(); // { version, data }
+      if (savingRef.current) return; // a write started while this fetch was in flight
+      if (latest && latest.data && latest.version > versionRef.current) {
+        versionRef.current = latest.version;
+        setData(latest.data);
+      }
+    } catch (e) {}
+  }, []);
+
   // Light polling so other devices (spectators, other managers) pick up
-  // changes the moderator makes without needing a manual refresh.
-  // Guards against a stale response landing after a newer local write:
-  // if a persist() happened after this particular fetch was kicked off,
-  // the response is out of date and gets thrown away instead of
-  // clobbering the more recent local state.
+  // changes without needing a manual refresh, plus an immediate refresh
+  // whenever this tab regains focus — background tabs get throttled by
+  // the browser, so this catches a tab back up the moment someone
+  // switches to it, before they can act on stale data.
   useEffect(() => {
     if (!loaded) return;
-    const interval = setInterval(async () => {
-      if (savingRef.current) return;
-      const fetchStartedAt = Date.now();
-      try {
-        const latest = await apiGetState();
-        if (lastWriteRef.current > fetchStartedAt) return; // a newer local write beat this fetch back
-        if (savingRef.current) return; // a write started while this fetch was in flight
-        if (latest) {
-          setData(prev => JSON.stringify(prev) === JSON.stringify(latest) ? prev : latest);
-        }
-      } catch (e) {}
-    }, 4000);
-    return () => clearInterval(interval);
-  }, [loaded]);
+    const interval = setInterval(refreshFromServer, 4000);
+    const onVisible = () => { if (document.visibilityState === "visible") refreshFromServer(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [loaded, refreshFromServer]);
 
   const handleLogin = (code) => {
     let r = null;
