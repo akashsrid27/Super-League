@@ -10,8 +10,12 @@ import { getStore } from "@netlify/blobs";
 // write is rejected (409) instead of silently overwriting a newer
 // state — this is what stops a stale background tab from undoing a
 // more recent sale.
+//
+// KEY is "state-v2" (not "state") so this deploy starts completely
+// fresh, ignoring any pre-versioning data that was saved under the old
+// key. Everything from here on is written in the { version, data } shape.
 const STORE_NAME = "super-league-auction";
-const KEY = "state";
+const KEY = "state-v2";
 
 export default async (req) => {
   const store = getStore(STORE_NAME);
