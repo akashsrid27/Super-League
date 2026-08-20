@@ -629,7 +629,8 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const saveTimer = useRef(null);
   const savingRef = useRef(false);
-  const [role, setRole] = useState(null); // null | "admin" | "user"
+  const lastWriteRef = useRef(0); // timestamp of the most recent local write
+  const [role, setRole] = useState(null); // null | "admin" | "user" — never persisted, always re-prompted
 
   useEffect(() => {
     (async () => {
@@ -651,15 +652,9 @@ export default function App() {
     })();
   }, []);
 
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem("sl-auction-role");
-      if (saved === "admin" || saved === "user") setRole(saved);
-    } catch (e) {}
-  }, []);
-
   const persist = useCallback((next) => {
     setData(next);
+    lastWriteRef.current = Date.now();
     clearTimeout(saveTimer.current);
     savingRef.current = true;
     saveTimer.current = setTimeout(async () => {
@@ -670,12 +665,19 @@ export default function App() {
 
   // Light polling so other devices (spectators, other managers) pick up
   // changes the moderator makes without needing a manual refresh.
+  // Guards against a stale response landing after a newer local write:
+  // if a persist() happened after this particular fetch was kicked off,
+  // the response is out of date and gets thrown away instead of
+  // clobbering the more recent local state.
   useEffect(() => {
     if (!loaded) return;
     const interval = setInterval(async () => {
-      if (savingRef.current) return; // don't clobber an in-flight local save
+      if (savingRef.current) return;
+      const fetchStartedAt = Date.now();
       try {
         const latest = await apiGetState();
+        if (lastWriteRef.current > fetchStartedAt) return; // a newer local write beat this fetch back
+        if (savingRef.current) return; // a write started while this fetch was in flight
         if (latest) {
           setData(prev => JSON.stringify(prev) === JSON.stringify(latest) ? prev : latest);
         }
@@ -688,16 +690,12 @@ export default function App() {
     let r = null;
     if (code === "2703") r = "admin";
     else if (code === "0000") r = "user";
-    if (r) {
-      setRole(r);
-      try { localStorage.setItem("sl-auction-role", r); } catch (e) {}
-    }
+    if (r) setRole(r);
     return r !== null;
   };
 
   const handleLogout = () => {
     setRole(null);
-    try { localStorage.removeItem("sl-auction-role"); } catch (e) {}
   };
 
   if (!loaded || !data) {
