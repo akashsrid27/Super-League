@@ -636,8 +636,8 @@ export default function App() {
   const [data, setData] = useState(null);
   const [tab, setTab] = useState("auction");
   const [loaded, setLoaded] = useState(false);
-  const saveTimer = useRef(null);
   const savingRef = useRef(false);
+  const pendingWriteRef = useRef(null); // latest state queued while a write is in flight
   const versionRef = useRef(0); // last known server version this client is based on
   const [role, setRole] = useState(null); // null | "admin" | "user" — never persisted, always re-prompted
   const [syncNotice, setSyncNotice] = useState(null);
@@ -681,30 +681,47 @@ export default function App() {
     })();
   }, []);
 
-  const persist = useCallback((next) => {
-    setData(next);
-    clearTimeout(saveTimer.current);
+  // Sends a write immediately (no artificial delay). If another write is
+  // already in flight when this fires, it's queued instead of racing —
+  // that queued write goes out the instant the in-flight one resolves,
+  // using the freshly-confirmed version, so two quick clicks in the same
+  // browser can never falsely trigger a "someone else acted first" conflict
+  // against themselves.
+  const doWrite = useCallback(async (next) => {
     savingRef.current = true;
     const expectedVersion = versionRef.current;
-    saveTimer.current = setTimeout(async () => {
-      try {
-        const res = await apiSetState(next, expectedVersion);
-        if (res.ok) {
-          versionRef.current = res.version;
-        } else if (res.conflict) {
-          // Another tab/device wrote first — that action wins, so this
-          // one gets discarded rather than silently forced through
-          // (e.g. you can't undercut a bid someone else already placed
-          // a split-second earlier). Adopt the true state and say so,
-          // instead of just reverting with no explanation.
-          if (res.data) setData(res.data);
-          if (typeof res.version === "number") versionRef.current = res.version;
-          flashSyncNotice("Someone else acted first — synced to the latest state. Go ahead and try again.");
-        }
-      } catch (e) {}
-      savingRef.current = false;
-    }, 150);
+    try {
+      const res = await apiSetState(next, expectedVersion);
+      if (res.ok) {
+        versionRef.current = res.version;
+      } else if (res.conflict) {
+        // Another tab/device wrote first — that action wins, so this
+        // one gets discarded rather than silently forced through
+        // (e.g. you can't undercut a bid someone else already placed
+        // a split-second earlier). Adopt the true state and say so,
+        // instead of just reverting with no explanation.
+        if (res.data) setData(res.data);
+        if (typeof res.version === "number") versionRef.current = res.version;
+        flashSyncNotice("Someone else acted first — synced to the latest state. Go ahead and try again.");
+      }
+    } catch (e) {}
+    savingRef.current = false;
+
+    if (pendingWriteRef.current !== null) {
+      const queued = pendingWriteRef.current;
+      pendingWriteRef.current = null;
+      doWrite(queued);
+    }
   }, [flashSyncNotice]);
+
+  const persist = useCallback((next) => {
+    setData(next);
+    if (savingRef.current) {
+      pendingWriteRef.current = next; // supersedes any earlier queued write
+      return;
+    }
+    doWrite(next);
+  }, [doWrite]);
 
   const refreshFromServer = useCallback(async () => {
     if (savingRef.current) return;
@@ -725,7 +742,7 @@ export default function App() {
   // switches to it, before they can act on stale data.
   useEffect(() => {
     if (!loaded) return;
-    const interval = setInterval(refreshFromServer, 2000);
+    const interval = setInterval(refreshFromServer, 500);
     const onVisible = () => { if (document.visibilityState === "visible") refreshFromServer(); };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
